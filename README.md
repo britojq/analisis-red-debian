@@ -68,6 +68,12 @@ Añade tus dispositivos confiables allí (una MAC por línea).
 # 00:11:22:33:44:55
 ```
 
+En los archivos del repositorio se encuentra el archivo oui.txt, este archivo contiene el listado de dispositivos por Marca de MAC, en caso de no poder descargarlo de internet puede ubicarlo dentro de la carpeta:
+
+```bash
+\`~/reporte_red/oui.txt\`
+```
+
 ## 5. Vista del reporte generado
 
 ![Ejemplo del reporte de Red Generado ](ejemplo_reporte.png "Reporte del analisis del trafico de la red")
