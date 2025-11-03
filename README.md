@@ -24,34 +24,34 @@ Script avanzado en Bash para diagnosticar redes locales en sistemas Debian/Ubunt
 
 Ejecuta:
 
-\`\`\`bash
+```bash
 sudo apt update
 sudo apt install -y nmap arp-scan iproute2 tcpdump tshark darkstat curl dnsutils
-\`\`\`
+```
 
 ## 2. Permisos
 
 El script debe ejecutarse con \`sudo\`:
 
-\`\`\`bash
+```bash
 sudo ./analisis_red_completo.sh
-\`\`\`
+```
 
 ## 3. Configuración de darkstat (opcional)
 
 Edita \`/etc/darkstat/init.cfg\` para ajustar la interfaz:
 
-\`\`\`ini
+```ini
 INTERFACE="-i eno1"
 PORT="-p 667"
 BINDIP="-b 0.0.0.0"
-\`\`\`
+```
 
 Luego reinicia:
 
-\`\`\`bash
+```bash
 sudo systemctl restart darkstat
-\`\`\`
+```
 
 ## 4. Lista blanca de MACs
 
