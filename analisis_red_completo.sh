@@ -68,7 +68,7 @@ if [[ $EUID -ne 0 ]]; then
     exit 1
 fi
 
-# --- Detección robusta de interfaz ---
+# --- Detección de interfaz ---
 INTERFACE=""
 info "Buscando interfaz de red activa con IP IPv4..."
 
@@ -112,7 +112,7 @@ fi
 
 mapfile -t KNOWN_MACS < <(grep -E '^[0-9a-fA-F:]{17}$' "$WHITELIST")
 
-# --- Descargar OUI (URL corregida) ---
+# --- Descargar OUI ---
 if [[ ! -f "$OUI_FILE" ]]; then
     info "Descargando base de OUI (fabricantes de MAC)..."
     if command -v curl &> /dev/null; then
@@ -180,7 +180,7 @@ if ! command -v tshark &> /dev/null; then
     exit 1
 fi
 
-# --- Análisis IPv4 ---
+# --- Análisis de trafico IPv4 ---
 if [ -n "$IPV4_NET" ]; then
     arp-scan --interface="$INTERFACE" --localnet --ignoredups > "$TMP_DIR/arp4.txt" 2>/dev/null
     nmap -sn "$IPV4_NET" -oN "$TMP_DIR/nmap4.txt" >/dev/null 2>&1
@@ -236,7 +236,7 @@ if [ -n "$IPV4_NET" ]; then
     done
 fi
 
-# --- Análisis IPv6 ---
+# --- Análisis de trafico IPv6 ---
 if [ -n "$IPV6_NET" ]; then
     ip -6 neigh show dev "$INTERFACE" > "$TMP_DIR/ndp6.txt" 2>/dev/null
 
@@ -293,7 +293,7 @@ if [ -n "$IPV6_NET" ]; then
     done
 fi
 
-# --- Procesamiento corregido (sin subshells) ---
+# --- Procesamiento de datos recopilados ---
 TOTAL_SUSPICIOUS=0
 BROADCAST=0
 MULTICAST_IPv4=0
@@ -341,7 +341,7 @@ fi
 
 FECHA_REPORTE=$(date '+%Y-%m-%d %H:%M:%S')
 
-# --- Incluir todas las IPs con tráfico ---
+# --- Incluir todas las IPs con tráfico al reporte ---
 declare -A ALL_IPS_SEEN
 for ip in "${!DEVICE_RX[@]}"; do ALL_IPS_SEEN["$ip"]=1; done
 for ip in "${!DEVICE_TX[@]}"; do ALL_IPS_SEEN["$ip"]=1; done
@@ -409,7 +409,7 @@ for ip in "${!DEVICE_TX[@]}"; do ALL_IPS_SEEN["$ip"]=1; done
 
 chown "$SUDO_USER:" "$TXT_REPORT"
 
-# --- Generar reporte HTML ---
+# --- Generar reporte en formato HTML ---
 cat > "$HTML_REPORT" <<EOF
 <!DOCTYPE html>
 <html>
@@ -543,6 +543,7 @@ EOF
 
 chown "$SUDO_USER:" "$HTML_REPORT"
 
+# --- Mostrar informacion de culminacion de procesos en Shell ---
 log "Análisis completado. IPs con tráfico: ${#ALL_IPS_SEEN[@]}"
 info "✅ Análisis completado."
 info "📁 Reportes en: $REPORT_DIR"
