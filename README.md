@@ -18,26 +18,44 @@ Script avanzado en Bash para diagnosticar redes locales en sistemas Debian/Ubunt
 
 ## 🚀 Instalación
 
-Debes tener instalado los siguientes paquetes en tu debian para utilizarlo:
+# Guía de instalación detallada
 
-```bash
+## 1. Dependencias
+
+Ejecuta:
+
+\`\`\`bash
+sudo apt update
 sudo apt install -y nmap arp-scan iproute2 tcpdump tshark darkstat curl dnsutils
+\`\`\`
 
+## 2. Permisos
 
-## En otra carpeta
+El script debe ejecutarse con \`sudo\`:
 
-```bash
-cd /tmp
-git clone https://github.com/TU_USUARIO/analisis-red-debian.git
-cd analisis-red-debian
-
-
-# Instalar dependencias (si no las tienes)
-
-```bash
-sudo apt install -y nmap arp-scan iproute2 tcpdump tshark darkstat curl dnsutils
-
-# Ejecutar
-
-```bash
+\`\`\`bash
 sudo ./analisis_red_completo.sh
+\`\`\`
+
+## 3. Configuración de darkstat (opcional)
+
+Edita \`/etc/darkstat/init.cfg\` para ajustar la interfaz:
+
+\`\`\`ini
+INTERFACE="-i eno1"
+PORT="-p 667"
+BINDIP="-b 0.0.0.0"
+\`\`\`
+
+Luego reinicia:
+
+\`\`\`bash
+sudo systemctl restart darkstat
+\`\`\`
+
+## 4. Lista blanca de MACs
+
+La primera vez que ejecutes el script, se creará:
+\`~/reporte_red/mac_whitelist.txt\`
+
+Añade tus dispositivos confiables allí (una MAC por línea).
