@@ -18,5 +18,7 @@ Script avanzado en Bash para diagnosticar redes locales en sistemas Debian/Ubunt
 
 ## 🚀 Instalación
 
+Debes tener instalado los siguientes paquetes en tu debian para utilizarlo:
+
 ```bash
 sudo apt install -y nmap arp-scan iproute2 tcpdump tshark darkstat curl dnsutils
