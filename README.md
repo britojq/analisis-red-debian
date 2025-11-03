@@ -24,7 +24,7 @@ Debes tener instalado los siguientes paquetes en tu debian para utilizarlo:
 sudo apt install -y nmap arp-scan iproute2 tcpdump tshark darkstat curl dnsutils
 
 
-# En otra carpeta
+## En otra carpeta
 
 ```bash
 cd /tmp
