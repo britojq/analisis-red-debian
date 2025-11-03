@@ -54,8 +54,16 @@ sudo systemctl restart darkstat
 ```
 
 ## 4. Lista blanca de MACs
+La primera vez que ejecutes el script, se creará en tu home la siguiente carpeta:
 
-La primera vez que ejecutes el script, se creará:
+```bash
 \`~/reporte_red/mac_whitelist.txt\`
+```
 
 Añade tus dispositivos confiables allí (una MAC por línea).
+
+```bash
+# Lista blanca de direcciones MAC (una por línea)
+# Ejemplo:
+# 00:11:22:33:44:55
+```
