@@ -25,7 +25,6 @@
 #
 #################################################
 # Script avanzado de análisis de red para Debian
-# Tabla actualizada: IP | Hostname | MAC | RX | TX | Total | Fecha
 # Fecha: 2025-10-31
 #################################################
 
@@ -157,7 +156,7 @@ declare -A DEVICE_ISSUES
 declare -A SUSPICIOUS_DEVICES
 
 # --- Captura ---
-info "Iniciando captura en '$INTERFACE' (120s). Genera tráfico AHORA."
+info "Iniciando captura en '$INTERFACE' (120s). Capturando tráfico en la red."
 tcpdump -i "$INTERFACE" -s 0 -w "$PCAP_FILE" -nn -p > /dev/null 2>&1 &
 TCPDUMP_PID=$!
 sleep 120

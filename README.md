@@ -79,6 +79,26 @@ En los archivos del repositorio se encuentra el archivo oui.txt, este archivo co
 ![Ejemplo del reporte de Red Generado ](ejemplo_reporte.png "Reporte del analisis del trafico de la red")
 
 
+## 6. Modulo Adicional (envio de reporte a bot de telegram)
+
+- Ejecuta automáticamente el análisis de red
+- Espera a que termine
+- Envía el último reporte HTML al bot de Telegram
+
+Se debe configurar las siguientes variables del script:
+
+```bash
+TELEGRAM_BOT_TOKEN="TU_TOKEN_AQUI"          # Reemplaza con tu token de bot
+TELEGRAM_CHAT_ID="TU_CHAT_ID_AQUI"          # Reemplaza con tu ID de usuario
+```
+
+Luego debes ejecutarlo: 
+
+```bash
+sudo ./envio_telegram.sh
+```
+
+
 ## ¡Eso es todo, chicos!
 
 Si cree que falta algo o si encontró un error, ¡no dude en enviar una solicitud de pull request! o enviame un correo a: britojq@gmail.com
