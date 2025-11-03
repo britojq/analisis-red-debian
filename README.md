@@ -71,3 +71,13 @@ Añade tus dispositivos confiables allí (una MAC por línea).
 ## 5. Vista del reporte generado
 
 ![Ejemplo del reporte de Red Generado ](ejemplo_reporte.png "Reporte del analisis del trafico de la red")
+
+
+## ¡Eso es todo, chicos!
+
+Si cree que falta algo o si encontró un error, ¡no dude en enviar una solicitud de pull request! o enviame un correo a: britojq@gmail.com
+
+## Autor
+Jose A. Brito H. 
+: @britojq : @britojab :
+www.britojab.com
