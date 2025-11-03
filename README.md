@@ -7,6 +7,8 @@ Script avanzado en Bash para diagnosticar redes locales en sistemas Debian/Ubunt
 - Storms de broadcast/multicast
 - Dispositivos no autorizados
 
+![Ejemplo del reporte de Red Generado ](ejemplo_reporte.png "Reporte del analisis del trafico de la red")
+
 ## 📊 Características
 
 - Tabla detallada: **IP | Hostname | MAC | RX | TX | Total | Fecha**
