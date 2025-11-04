@@ -28,6 +28,7 @@
 # Fecha: 2025-10-31
 #################################################
 
+
 if [[ $EUID -eq 0 ]] && [[ -n "$SUDO_USER" ]]; then
     USER_HOME=$(getent passwd "$SUDO_USER" | cut -d: -f6)
 else
@@ -96,8 +97,50 @@ fi
 
 info "✅ Interfaz seleccionada: $INTERFACE"
 
-IPV4_NET=$(ip -4 route show dev "$INTERFACE" scope global 2>/dev/null | awk '{print $1}' | head -n1)
-IPV6_NET=$(ip -6 route show dev "$INTERFACE" 2>/dev/null | grep -v default | awk '{print $1}' | head -n1)
+# --- Obtener IP y máscara de la interfaz ---
+MY_IP=$(ip -4 addr show dev "$INTERFACE" 2>/dev/null | awk '/inet / {print $2}' | head -n1 | cut -d'/' -f1)
+MY_MASK=$(ip -4 addr show dev "$INTERFACE" 2>/dev/null | awk '/inet / {print $2}' | head -n1 | cut -d'/' -f2)
+
+if [[ -z "$MY_IP" ]] || [[ -z "$MY_MASK" ]]; then
+    warn "No se pudo determinar la IP/máscara de la interfaz."
+    MY_IP=""
+    MY_MASK=""
+else
+    info "IP de la interfaz: $MY_IP/$MY_MASK"
+fi
+
+# --- Función para verificar si una IP es local ---
+es_ip_local() {
+    local ip="$1"
+
+    # Validar formato de IP
+    if ! [[ "$ip" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
+        return 1
+    fi
+
+    if [[ -z "$MY_IP" ]] || [[ -z "$MY_MASK" ]]; then
+        return 1
+    fi
+
+    if ! [[ "$MY_MASK" =~ ^[0-9]+$ ]] || [[ "$MY_MASK" -lt 0 ]] || [[ "$MY_MASK" -gt 32 ]]; then
+        return 1
+    fi
+
+    # Validar octetos de la IP
+    IFS='.' read -r a b c d <<< "$ip"
+    for i in "$a" "$b" "$c" "$d"; do
+        if ! [[ "$i" =~ ^[0-9]+$ ]] || [[ "$i" -lt 0 ]] || [[ "$i" -gt 255 ]]; then
+            return 1
+        fi
+    done
+    local ip_int=$((a<<24 | b<<16 | c<<8 | d))
+
+    IFS='.' read -r a b c d <<< "$MY_IP"
+    local my_ip_int=$((a<<24 | b<<16 | c<<8 | d))
+
+    local netmask=$((0xffffffff << (32 - MY_MASK)))
+    [[ $((ip_int & netmask)) -eq $((my_ip_int & netmask)) ]]
+}
 
 WHITELIST="$REPORT_DIR/mac_whitelist.txt"
 if [[ ! -f "$WHITELIST" ]]; then
@@ -111,7 +154,7 @@ fi
 
 mapfile -t KNOWN_MACS < <(grep -E '^[0-9a-fA-F:]{17}$' "$WHITELIST")
 
-# --- Descargar OUI ---
+# --- Descargar OUI (URL Externa de internet) ---
 if [[ ! -f "$OUI_FILE" ]]; then
     info "Descargando base de OUI (fabricantes de MAC)..."
     if command -v curl &> /dev/null; then
@@ -133,7 +176,7 @@ get_hostname() {
     fi
     if [[ -z "$hn" ]]; then
         mac="${DEVICE_MAC[$ip]}"
-        if [[ -n "$mac" ]]; then
+        if [[ -n "$mac" ]] && [[ "$mac" != "N/A (externo)" ]] && [[ "$mac" != "desconocida" ]]; then
             oui=$(echo "$mac" | cut -d: -f1-3 | tr '[:upper:]' '[:lower:]' | tr -d ':')
             if [[ ${#oui} -eq 6 ]]; then
                 vendor=$(grep "^$oui" "$OUI_FILE" | cut -f2 | head -n1)
@@ -179,18 +222,41 @@ if ! command -v tshark &> /dev/null; then
     exit 1
 fi
 
-# --- Análisis de trafico IPv4 ---
-if [ -n "$IPV4_NET" ]; then
+# --- EXTRAER MACS DEL TRÁFICO (solo para IPs locales) ---
+info "Extrayendo direcciones MAC del tráfico capturado..."
+tshark -r "$PCAP_FILE" -T fields -e eth.src -e ip.src 2>/dev/null | \
+while read -r mac ip; do
+    if [[ "$mac" =~ ^([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$ ]] && [[ -n "$ip" ]] && [[ "$ip" != "0.0.0.0" ]]; then
+        if es_ip_local "$ip"; then
+            if [[ -z "${DEVICE_MAC[$ip]}" ]]; then
+                DEVICE_MAC["$ip"]="$mac"
+            fi
+        else
+            if [[ -z "${DEVICE_MAC[$ip]}" ]]; then
+                DEVICE_MAC["$ip"]="N/A (externo)"
+            fi
+        fi
+    fi
+done
+
+# --- Análisis IPv4 (ARP) - solo para hosts locales ---
+if [ -n "$MY_IP" ]; then
     arp-scan --interface="$INTERFACE" --localnet --ignoredups > "$TMP_DIR/arp4.txt" 2>/dev/null
-    nmap -sn "$IPV4_NET" -oN "$TMP_DIR/nmap4.txt" >/dev/null 2>&1
 
     while IFS= read -r line; do
         if [[ $line =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+ ]]; then
             ip=$(echo "$line" | awk '{print $1}')
             mac=$(echo "$line" | awk '{print $2}')
-            DEVICE_MAC["$ip"]="$mac"
+            if [[ -n "$mac" ]] && es_ip_local "$ip"; then
+                if [[ -z "${DEVICE_MAC[$ip]}" ]] || [[ "${DEVICE_MAC[$ip]}" == "N/A (externo)" ]]; then
+                    DEVICE_MAC["$ip"]="$mac"
+                fi
+            fi
         fi
     done < "$TMP_DIR/arp4.txt"
+
+    # Solo escanear la red local si tenemos MY_IP
+    nmap -sn "$MY_IP/$MY_MASK" -oN "$TMP_DIR/nmap4.txt" >/dev/null 2>&1
 
     while IFS= read -r ip; do
         if [[ "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
@@ -207,7 +273,9 @@ if [ -n "$IPV4_NET" ]; then
                 if [[ -n "$avg_raw" ]]; then
                     avg_int=${avg_raw%.*}
                     avg_int=${avg_int:-0}
-                    echo "$ip (IPv4): $avg_raw ms" >> "$TMP_DIR/latencia.txt"
+                    # ✅ Incluir MAC en el archivo de latencia
+                    mac="${DEVICE_MAC[$ip]:-desconocida}"
+                    echo -e "$ip\t$avg_raw\t$mac" >> "$TMP_DIR/latencia_raw.txt"
                     if (( avg_int > 150 )); then
                         DEVICE_ISSUES["$ip"]="Alta latencia ($avg_raw ms)"
                     fi
@@ -217,34 +285,38 @@ if [ -n "$IPV4_NET" ]; then
     done < <(grep "Nmap scan report" "$TMP_DIR/nmap4.txt" | awk '{print $NF}' | tr -d '()')
 
     for ip in "${!DEVICE_MAC[@]}"; do
-        mac="${DEVICE_MAC[$ip]}"
-        is_known=false
-        for known in "${KNOWN_MACS[@]}"; do
-            if [[ "${known,,}" == "${mac,,}" ]]; then
-                is_known=true
-                break
-            fi
-        done
-        if [[ "$is_known" == false ]]; then
-            if [[ -n "${DEVICE_ISSUES[$ip]}" ]]; then
-                DEVICE_ISSUES["$ip"]+="; Dispositivo no autorizado"
-            else
-                DEVICE_ISSUES["$ip"]="Dispositivo no autorizado"
+        if [[ "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] && es_ip_local "$ip"; then
+            mac="${DEVICE_MAC[$ip]}"
+            is_known=false
+            for known in "${KNOWN_MACS[@]}"; do
+                if [[ "${known,,}" == "${mac,,}" ]] && [[ "$mac" != "N/A (externo)" ]] && [[ "$mac" != "desconocida" ]]; then
+                    is_known=true
+                    break
+                fi
+            done
+            if [[ "$is_known" == false ]] && [[ "$mac" != "N/A (externo)" ]]; then
+                if [[ -n "${DEVICE_ISSUES[$ip]}" ]]; then
+                    DEVICE_ISSUES["$ip"]+="; Dispositivo no autorizado"
+                else
+                    DEVICE_ISSUES["$ip"]="Dispositivo no autorizado"
+                fi
             fi
         fi
     done
 fi
 
-# --- Análisis de trafico IPv6 ---
-if [ -n "$IPV6_NET" ]; then
+# --- Análisis IPv6 ---
+if [ -n "$MY_IP" ]; then
     ip -6 neigh show dev "$INTERFACE" > "$TMP_DIR/ndp6.txt" 2>/dev/null
 
     while IFS= read -r line; do
         set -- $line
         ip=$1
         mac=$5
-        if [[ -n "$ip" && -n "$mac" && "$mac" != "REACHABLE" ]]; then
-            DEVICE_MAC["$ip"]="$mac"
+        if [[ -n "$ip" && -n "$mac" && "$mac" != "REACHABLE" && "$mac" != "00:00:00:00:00:00" ]]; then
+            if [[ -z "${DEVICE_MAC[$ip]}" ]]; then
+                DEVICE_MAC["$ip"]="$mac"
+            fi
         fi
     done < "$TMP_DIR/ndp6.txt"
 
@@ -263,7 +335,8 @@ if [ -n "$IPV6_NET" ]; then
                 if [[ -n "$avg_raw" ]]; then
                     avg_int=${avg_raw%.*}
                     avg_int=${avg_int:-0}
-                    echo "$ip (IPv6): $avg_raw ms" >> "$TMP_DIR/latencia.txt"
+                    mac="${DEVICE_MAC[$ip]:-desconocida}"
+                    echo -e "$ip\t$avg_raw\t$mac" >> "$TMP_DIR/latencia_raw.txt"
                     if (( avg_int > 150 )); then
                         DEVICE_ISSUES["$ip"]="Alta latencia ($avg_raw ms)"
                     fi
@@ -273,26 +346,27 @@ if [ -n "$IPV6_NET" ]; then
     done < <(awk '{print $1}' "$TMP_DIR/ndp6.txt" | grep -v '^$')
 
     for ip in "${!DEVICE_MAC[@]}"; do
-        [[ -n "${DEVICE_MAC[$ip]}" ]] || continue
-        mac="${DEVICE_MAC[$ip]}"
-        is_known=false
-        for known in "${KNOWN_MACS[@]}"; do
-            if [[ "${known,,}" == "${mac,,}" ]]; then
-                is_known=true
-                break
-            fi
-        done
-        if [[ "$is_known" == false ]]; then
-            if [[ -n "${DEVICE_ISSUES[$ip]}" ]]; then
-                DEVICE_ISSUES["$ip"]+="; Dispositivo no autorizado"
-            else
-                DEVICE_ISSUES["$ip"]="Dispositivo no autorizado"
+        if [[ "$ip" == *":"* ]]; then
+            mac="${DEVICE_MAC[$ip]}"
+            is_known=false
+            for known in "${KNOWN_MACS[@]}"; do
+                if [[ "${known,,}" == "${mac,,}" ]] && [[ "$mac" != "N/A (externo)" ]] && [[ "$mac" != "desconocida" ]]; then
+                    is_known=true
+                    break
+                fi
+            done
+            if [[ "$is_known" == false ]] && [[ "$mac" != "N/A (externo)" ]]; then
+                if [[ -n "${DEVICE_ISSUES[$ip]}" ]]; then
+                    DEVICE_ISSUES["$ip"]+="; Dispositivo no autorizado"
+                else
+                    DEVICE_ISSUES["$ip"]="Dispositivo no autorizado"
+                fi
             fi
         fi
     done
 fi
 
-# --- Procesamiento de datos recopilados ---
+# --- Procesamiento de tráfico (RX/TX) ---
 TOTAL_SUSPICIOUS=0
 BROADCAST=0
 MULTICAST_IPv4=0
@@ -332,6 +406,47 @@ if [[ $PKT_COUNT -gt 0 ]]; then
     )
 fi
 
+# --- Clasificar IPs por segmento ---
+declare -a LOCAL_CON_MAC
+declare -a LOCAL_SIN_MAC
+declare -a EXTERNOS
+
+# Recopilar todas las IPs con tráfico
+declare -A ALL_IPS_SEEN
+for ip in "${!DEVICE_RX[@]}" "${!DEVICE_TX[@]}"; do
+    [[ -n "$ip" ]] && ALL_IPS_SEEN["$ip"]=1
+done
+
+for ip in "${!ALL_IPS_SEEN[@]}"; do
+    if [[ "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        if es_ip_local "$ip"; then
+            if [[ -n "${DEVICE_MAC[$ip]}" ]] && [[ "${DEVICE_MAC[$ip]}" != "desconocida" ]] && [[ "${DEVICE_MAC[$ip]}" != "N/A (externo)" ]]; then
+                LOCAL_CON_MAC+=("$ip")
+            else
+                LOCAL_SIN_MAC+=("$ip")
+            fi
+        else
+            EXTERNOS+=("$ip")
+        fi
+    else
+        EXTERNOS+=("$ip")
+    fi
+done
+
+# Eliminar duplicados
+mapfile -t LOCAL_CON_MAC < <(printf '%s\n' "${LOCAL_CON_MAC[@]}" | sort -u)
+mapfile -t LOCAL_SIN_MAC < <(printf '%s\n' "${LOCAL_SIN_MAC[@]}" | sort -u)
+mapfile -t EXTERNOS < <(printf '%s\n' "${EXTERNOS[@]}" | sort -u)
+
+# --- Procesar y ordenar latencias ---
+declare -a LATENCIA_TABLA
+if [[ -f "$TMP_DIR/latencia_raw.txt" ]]; then
+    # Ordenar por latencia (descendente)
+    while IFS=$'\t' read -r ip latencia mac; do
+        LATENCIA_TABLA+=("$ip|$latencia|$mac")
+    done < <(sort -k2 -n -r -t$'\t' "$TMP_DIR/latencia_raw.txt")
+fi
+
 DASH_URL="No activo"
 if systemctl is-active --quiet darkstat; then
     IP_LOCAL=$(ip -4 addr show dev "$INTERFACE" 2>/dev/null | awk '/inet / {print $2}' | cut -d'/' -f1 | head -n1)
@@ -340,18 +455,14 @@ fi
 
 FECHA_REPORTE=$(date '+%Y-%m-%d %H:%M:%S')
 
-# --- Incluir todas las IPs con tráfico al reporte ---
-declare -A ALL_IPS_SEEN
-for ip in "${!DEVICE_RX[@]}"; do ALL_IPS_SEEN["$ip"]=1; done
-for ip in "${!DEVICE_TX[@]}"; do ALL_IPS_SEEN["$ip"]=1; done
-
 # --- Generar reporte de texto ---
 {
     echo "=== REPORTE DE ANÁLISIS DE RED ==="
     echo "Fecha: $FECHA_REPORTE"
     echo "Interfaz: $INTERFACE"
-    echo "Red IPv4: ${IPV4_NET:-N/A}"
-    echo "Red IPv6: ${IPV6_NET:-N/A}"
+    if [[ -n "$MY_IP" ]]; then
+        echo "Red local: $MY_IP/$MY_MASK"
+    fi
     echo "Paquetes capturados: $PKT_COUNT"
     echo ""
 
@@ -374,10 +485,10 @@ for ip in "${!DEVICE_TX[@]}"; do ALL_IPS_SEEN["$ip"]=1; done
     printf "%-40s %-25s %-20s %-18s %-18s %-12s %s\n" "IP" "Hostname" "MAC" "RX (recibidos)" "TX (enviados)" "Total Tráfico" "Fecha"
     echo "--------------------------------------------------------------------------------------------------------------------------------------------------"
 
-    if [[ ${#ALL_IPS_SEEN[@]} -eq 0 ]]; then
-        echo "No se detectaron direcciones IP con tráfico durante la captura."
-    else
-        for ip in "${!ALL_IPS_SEEN[@]}"; do
+    # Sección 1: Hosts locales con MAC
+    if [[ ${#LOCAL_CON_MAC[@]} -gt 0 ]]; then
+        echo "🔹 HOSTS LOCALES (en la misma red):"
+        for ip in "${LOCAL_CON_MAC[@]}"; do
             hostname=$(get_hostname "$ip")
             mac="${DEVICE_MAC[$ip]:-desconocida}"
             rx=${DEVICE_RX[$ip]:-0}
@@ -385,30 +496,66 @@ for ip in "${!DEVICE_TX[@]}"; do ALL_IPS_SEEN["$ip"]=1; done
             total=$(( rx + tx ))
             printf "%-40s %-25s %-20s %-18s %-18s %-12s %s\n" "$ip" "$hostname" "$mac" "$rx" "$tx" "$total" "$FECHA_REPORTE"
         done
+        echo ""
     fi
-    echo ""
+
+    # Sección 2: Hosts locales sin MAC
+    if [[ ${#LOCAL_SIN_MAC[@]} -gt 0 ]]; then
+        echo "🔸 HOSTS LOCALES (sin MAC detectada):"
+        for ip in "${LOCAL_SIN_MAC[@]}"; do
+            hostname=$(get_hostname "$ip")
+            mac="desconocida"
+            rx=${DEVICE_RX[$ip]:-0}
+            tx=${DEVICE_TX[$ip]:-0}
+            total=$(( rx + tx ))
+            printf "%-40s %-25s %-20s %-18s %-18s %-12s %s\n" "$ip" "$hostname" "$mac" "$rx" "$tx" "$total" "$FECHA_REPORTE"
+        done
+        echo ""
+    fi
+
+    # Sección 3: Hosts externos
+    if [[ ${#EXTERNOS[@]} -gt 0 ]]; then
+        echo "🌐 HOSTS EXTERNOS (Internet/otras redes):"
+        for ip in "${EXTERNOS[@]}"; do
+            hostname=$(get_hostname "$ip")
+            mac="${DEVICE_MAC[$ip]:-N/A (externo)}"
+            rx=${DEVICE_RX[$ip]:-0}
+            tx=${DEVICE_TX[$ip]:-0}
+            total=$(( rx + tx ))
+            printf "%-40s %-25s %-20s %-18s %-18s %-12s %s\n" "$ip" "$hostname" "$mac" "$rx" "$tx" "$total" "$FECHA_REPORTE"
+        done
+        echo ""
+    fi
 
     if (( BROADCAST > 200 || MULTICAST_IPv4 > 300 || MULTICAST_IPv6 > 300 )); then
         echo "⚠️  ALERTA GLOBAL: Posible storm de broadcast/multicast"
         echo ""
     fi
 
-    echo "=== LATENCIAS ==="
-    if [[ -f "$TMP_DIR/latencia.txt" ]]; then
-        sort -k3 -n -t: "$TMP_DIR/latencia.txt"
+    echo "=== LATENCIAS (ordenadas de mayor a menor) ==="
+    if [[ ${#LATENCIA_TABLA[@]} -gt 0 ]]; then
+        printf "%-40s %-15s %s\n" "Dispositivo" "Latencia (ms)" "MAC"
+        echo "------------------------------------------------------------------------"
+        for entry in "${LATENCIA_TABLA[@]}"; do
+            IFS='|' read -r ip latencia mac <<< "$entry"
+            printf "%-40s %-15s %s\n" "$ip" "$latencia" "$mac"
+        done
     else
         echo "Sin datos de latencia."
     fi
     echo ""
     echo "ℹ️ Nota: Este reporte analiza solo el tráfico capturado durante su ejecución (120 segundos)."
-    echo "   Darkstat muestra tráfico acumulado desde que se inició el servicio."
+    if [[ -n "$MY_IP" ]]; then
+        echo "   - Hosts locales: en tu red $MY_IP/$MY_MASK"
+    fi
+    echo "   - Hosts externos: direcciones fuera de tu red local (MAC no visible)."
     echo ""
     echo "Archivos: $REPORT_DIR"
 } > "$TXT_REPORT"
 
 chown "$SUDO_USER:" "$TXT_REPORT"
 
-# --- Generar reporte en formato HTML ---
+# --- Generar reporte HTML ---
 cat > "$HTML_REPORT" <<EOF
 <!DOCTYPE html>
 <html>
@@ -419,12 +566,17 @@ cat > "$HTML_REPORT" <<EOF
         body { font-family: Arial, sans-serif; margin: 20px; background: #fafafa; }
         .header { background: #4a6fa5; color: white; padding: 15px; border-radius: 8px; margin-bottom: 20px; }
         .section { background: white; padding: 15px; margin: 15px 0; border-radius: 6px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+        .local { border-left: 4px solid #4caf50; }
+        .local-unknown { border-left: 4px solid #ff9800; }
+        .external { border-left: 4px solid #2196f3; }
         .suspicious { background-color: #ffcdd2; border-left: 4px solid #d32f2f; }
         table { width: 100%; border-collapse: collapse; margin: 10px 0; }
         th, td { border: 1px solid #ddd; padding: 10px; text-align: left; }
         th { background-color: #f5f5f5; }
         .alert { background-color: #ffebee; }
         .note { background-color: #e8f5e8; padding: 10px; border-radius: 4px; }
+        .high-latency { color: #d32f2f; font-weight: bold; }
+        h3 { margin-top: 0; }
     </style>
 </head>
 <body>
@@ -432,7 +584,7 @@ cat > "$HTML_REPORT" <<EOF
         <h1>🔍 Reporte de Análisis de Red</h1>
         <p><strong>Fecha:</strong> $FECHA_REPORTE</p>
         <p><strong>Interfaz:</strong> $INTERFACE</p>
-        <p><strong>IPv4:</strong> ${IPV4_NET:-N/A} | <strong>IPv6:</strong> ${IPV6_NET:-N/A}</p>
+        <p><strong>Red local:</strong> ${MY_IP:-N/A}${MY_MASK:+/$MY_MASK}</p>
         <p><strong>Paquetes capturados:</strong> $PKT_COUNT</p>
     </div>
 
@@ -461,29 +613,95 @@ fi
 cat >> "$HTML_REPORT" <<EOF
     <div class="section">
         <h2>📊 Tabla de Dispositivos en la Red</h2>
-        <table>
-            <tr>
-                <th>IP</th>
-                <th>Hostname</th>
-                <th>MAC</th>
-                <th>RX (recibidos)</th>
-                <th>TX (enviados)</th>
-                <th>Total Tráfico</th>
-                <th>Fecha</th>
-            </tr>
+
 EOF
 
-if [[ ${#ALL_IPS_SEEN[@]} -eq 0 ]]; then
-    echo "            <tr><td colspan='7'>No se detectaron direcciones IP con tráfico.</td></tr>" >> "$HTML_REPORT"
-else
-    for ip in "${!ALL_IPS_SEEN[@]}"; do
+# Sección 1: Locales con MAC
+if [[ ${#LOCAL_CON_MAC[@]} -gt 0 ]]; then
+    cat >> "$HTML_REPORT" <<EOF
+        <div class="local">
+            <h3>🔹 Hosts Locales (en la misma red)</h3>
+            <table>
+                <tr><th>IP</th><th>Hostname</th><th>MAC</th><th>RX</th><th>TX</th><th>Total</th><th>Fecha</th></tr>
+EOF
+    for ip in "${LOCAL_CON_MAC[@]}"; do
         hostname=$(get_hostname "$ip")
         mac="${DEVICE_MAC[$ip]:-desconocida}"
         rx=${DEVICE_RX[$ip]:-0}
         tx=${DEVICE_TX[$ip]:-0}
         total=$(( rx + tx ))
-        echo "            <tr><td>$ip</td><td>$hostname</td><td>$mac</td><td>$rx</td><td>$tx</td><td>$total</td><td>$FECHA_REPORTE</td></tr>" >> "$HTML_REPORT"
+        echo "                <tr><td>$ip</td><td>$hostname</td><td>$mac</td><td>$rx</td><td>$tx</td><td>$total</td><td>$FECHA_REPORTE</td></tr>" >> "$HTML_REPORT"
     done
+    cat >> "$HTML_REPORT" <<EOF
+            </table>
+        </div>
+EOF
+fi
+
+# Sección 2: Locales sin MAC
+if [[ ${#LOCAL_SIN_MAC[@]} -gt 0 ]]; then
+    cat >> "$HTML_REPORT" <<EOF
+        <div class="local-unknown">
+            <h3>🔸 Hosts Locales (sin MAC detectada)</h3>
+            <table>
+                <tr><th>IP</th><th>Hostname</th><th>MAC</th><th>RX</th><th>TX</th><th>Total</th><th>Fecha</th></tr>
+EOF
+    for ip in "${LOCAL_SIN_MAC[@]}"; do
+        hostname=$(get_hostname "$ip")
+        mac="desconocida"
+        rx=${DEVICE_RX[$ip]:-0}
+        tx=${DEVICE_TX[$ip]:-0}
+        total=$(( rx + tx ))
+        echo "                <tr><td>$ip</td><td>$hostname</td><td>$mac</td><td>$rx</td><td>$tx</td><td>$total</td><td>$FECHA_REPORTE</td></tr>" >> "$HTML_REPORT"
+    done
+    cat >> "$HTML_REPORT" <<EOF
+            </table>
+        </div>
+EOF
+fi
+
+# Sección 3: Externos
+if [[ ${#EXTERNOS[@]} -gt 0 ]]; then
+    cat >> "$HTML_REPORT" <<EOF
+        <div class="external">
+            <h3>🌐 Hosts Externos (Internet/otras redes)</h3>
+            <table>
+                <tr><th>IP</th><th>Hostname</th><th>MAC</th><th>RX</th><th>TX</th><th>Total</th><th>Fecha</th></tr>
+EOF
+    for ip in "${EXTERNOS[@]}"; do
+        hostname=$(get_hostname "$ip")
+        mac="${DEVICE_MAC[$ip]:-N/A (externo)}"
+        rx=${DEVICE_RX[$ip]:-0}
+        tx=${DEVICE_TX[$ip]:-0}
+        total=$(( rx + tx ))
+        echo "                <tr><td>$ip</td><td>$hostname</td><td>$mac</td><td>$rx</td><td>$tx</td><td>$total</td><td>$FECHA_REPORTE</td></tr>" >> "$HTML_REPORT"
+    done
+    cat >> "$HTML_REPORT" <<EOF
+            </table>
+        </div>
+EOF
+fi
+
+cat >> "$HTML_REPORT" <<EOF
+    </div>
+
+    <div class="section">
+        <h2>⏱️ Latencias (ordenadas de mayor a menor)</h2>
+        <table>
+            <tr><th>Dispositivo</th><th>Latencia (ms)</th><th>MAC</th></tr>
+EOF
+
+if [[ ${#LATENCIA_TABLA[@]} -gt 0 ]]; then
+    for entry in "${LATENCIA_TABLA[@]}"; do
+        IFS='|' read -r ip latencia mac <<< "$entry"
+        if (( ${latencia%.*} > 150 )); then
+            echo "            <tr><td>$ip</td><td class=\"high-latency\">$latencia</td><td>$mac</td></tr>" >> "$HTML_REPORT"
+        else
+            echo "            <tr><td>$ip</td><td>$latencia</td><td>$mac</td></tr>" >> "$HTML_REPORT"
+        fi
+    done
+else
+    echo "            <tr><td colspan='3'>Sin datos de latencia.</td></tr>" >> "$HTML_REPORT"
 fi
 
 cat >> "$HTML_REPORT" <<EOF
@@ -491,8 +709,20 @@ cat >> "$HTML_REPORT" <<EOF
     </div>
 
     <div class="note">
-        <p><strong>ℹ️ Nota:</strong> Este reporte analiza solo el tráfico capturado durante su ejecución (120 segundos). 
-        Darkstat muestra tráfico acumulado desde que se inició el servicio.</p>
+        <p><strong>ℹ️ Nota:</strong>
+        Este reporte analiza solo el tráfico capturado durante su ejecución (120 segundos).<br>
+EOF
+
+if [[ -n "$MY_IP" ]]; then
+    cat >> "$HTML_REPORT" <<EOF
+        - <strong>Hosts locales</strong>: en tu red $MY_IP/$MY_MASK<br>
+EOF
+fi
+
+cat >> "$HTML_REPORT" <<EOF
+        - <strong>Hosts externos</strong>: direcciones fuera de tu red local (MAC no visible).<br>
+        - <strong class="high-latency">Latencias altas (>150 ms)</strong> se muestran en rojo.
+        </p>
     </div>
 EOF
 
@@ -505,28 +735,6 @@ EOF
 fi
 
 cat >> "$HTML_REPORT" <<EOF
-    <div class="section">
-        <h2>📊 Latencias</h2>
-        <table>
-            <tr><th>Dispositivo</th><th>Latencia</th></tr>
-EOF
-
-if [[ -f "$TMP_DIR/latencia.txt" ]]; then
-    while IFS= read -r line; do
-        if [[ -n "$line" ]]; then
-            dev=$(echo "$line" | cut -d: -f1)
-            lat=$(echo "$line" | cut -d: -f2-)
-            echo "            <tr><td>$dev</td><td>$lat</td></tr>" >> "$HTML_REPORT"
-        fi
-    done < "$TMP_DIR/latencia.txt"
-else
-    echo "            <tr><td colspan='2'>Sin datos de latencia.</td></tr>" >> "$HTML_REPORT"
-fi
-
-cat >> "$HTML_REPORT" <<EOF
-        </table>
-    </div>
-
     <div class="section">
         <h2>📁 Archivos Generados</h2>
         <ul>
@@ -542,8 +750,7 @@ EOF
 
 chown "$SUDO_USER:" "$HTML_REPORT"
 
-# --- Mostrar informacion de culminacion de procesos en Shell ---
-log "Análisis completado. IPs con tráfico: ${#ALL_IPS_SEEN[@]}"
+log "Análisis completado. Locales con MAC: ${#LOCAL_CON_MAC[@]}, sin MAC: ${#LOCAL_SIN_MAC[@]}, externos: ${#EXTERNOS[@]}"
 info "✅ Análisis completado."
 info "📁 Reportes en: $REPORT_DIR"
 info "📄 Abrir: file://$HTML_REPORT"
