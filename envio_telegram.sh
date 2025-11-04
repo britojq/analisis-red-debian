@@ -36,7 +36,6 @@ TELEGRAM_CHAT_ID="TU_CHAT_ID_AQUI"          # Reemplaza con tu ID de usuario
 # --- Rutas ---
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ANALISIS_SCRIPT="$SCRIPT_DIR/analisis_red_completo.sh"
-#ANALISIS_SCRIPT="/scripts/analisis-red-debian/analisis_red_completo.sh"
 REPORT_DIR="$HOME/reporte_red"
 
 # --- Colores ---
