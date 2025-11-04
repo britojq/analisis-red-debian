@@ -28,16 +28,15 @@
 # Fecha: 2025-10-31
 
 # --- CONFIGURACIÓN DE TELEGRAM (¡MODIFICA ESTOS VALORES!) ---
-TELEGRAM_BOT_TOKEN="1595888148:AAEMMMmCAV1I5EaUMkTQ3uVBJ2LpK9aIAoQ"
-TELEGRAM_CHAT_ID="38914901"
-#GRUPO ATIT
-#-1001383163558
+TELEGRAM_BOT_TOKEN="TU_TOKEN_AQUI"          # Reemplaza con tu token de bot
+TELEGRAM_CHAT_ID="TU_CHAT_ID_AQUI"          # Reemplaza con tu ID de usuario
+
 
 
 # --- Rutas ---
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-#ANALISIS_SCRIPT="$SCRIPT_DIR/analisis_red_completo.sh"
-ANALISIS_SCRIPT="/scripts/analisis-red-debian/analisis_red_completo.sh"
+ANALISIS_SCRIPT="$SCRIPT_DIR/analisis_red_completo.sh"
+#ANALISIS_SCRIPT="/scripts/analisis-red-debian/analisis_red_completo.sh"
 REPORT_DIR="$HOME/reporte_red"
 
 # --- Colores ---
