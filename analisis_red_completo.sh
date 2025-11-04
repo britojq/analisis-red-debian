@@ -154,7 +154,7 @@ fi
 
 mapfile -t KNOWN_MACS < <(grep -E '^[0-9a-fA-F:]{17}$' "$WHITELIST")
 
-# --- Descargar OUI (URL Externa de internet) ---
+# --- Descargar OUI (URL corregida) ---
 if [[ ! -f "$OUI_FILE" ]]; then
     info "Descargando base de OUI (fabricantes de MAC)..."
     if command -v curl &> /dev/null; then
@@ -199,7 +199,7 @@ declare -A DEVICE_ISSUES
 declare -A SUSPICIOUS_DEVICES
 
 # --- Captura ---
-info "Iniciando captura en '$INTERFACE' (120s). Capturando tráfico en la red."
+info "Iniciando captura en '$INTERFACE' (120s). Genera tráfico AHORA."
 tcpdump -i "$INTERFACE" -s 0 -w "$PCAP_FILE" -nn -p > /dev/null 2>&1 &
 TCPDUMP_PID=$!
 sleep 120
@@ -273,9 +273,8 @@ if [ -n "$MY_IP" ]; then
                 if [[ -n "$avg_raw" ]]; then
                     avg_int=${avg_raw%.*}
                     avg_int=${avg_int:-0}
-                    # ✅ Incluir MAC en el archivo de latencia
-                    mac="${DEVICE_MAC[$ip]:-desconocida}"
-                    echo -e "$ip\t$avg_raw\t$mac" >> "$TMP_DIR/latencia_raw.txt"
+                    # Guardar latencia para procesamiento posterior
+                    echo -e "$ip\t$avg_raw" >> "$TMP_DIR/latencia_raw.txt"
                     if (( avg_int > 150 )); then
                         DEVICE_ISSUES["$ip"]="Alta latencia ($avg_raw ms)"
                     fi
@@ -335,8 +334,7 @@ if [ -n "$MY_IP" ]; then
                 if [[ -n "$avg_raw" ]]; then
                     avg_int=${avg_raw%.*}
                     avg_int=${avg_int:-0}
-                    mac="${DEVICE_MAC[$ip]:-desconocida}"
-                    echo -e "$ip\t$avg_raw\t$mac" >> "$TMP_DIR/latencia_raw.txt"
+                    echo -e "$ip\t$avg_raw" >> "$TMP_DIR/latencia_raw.txt"
                     if (( avg_int > 150 )); then
                         DEVICE_ISSUES["$ip"]="Alta latencia ($avg_raw ms)"
                     fi
@@ -438,13 +436,39 @@ mapfile -t LOCAL_CON_MAC < <(printf '%s\n' "${LOCAL_CON_MAC[@]}" | sort -u)
 mapfile -t LOCAL_SIN_MAC < <(printf '%s\n' "${LOCAL_SIN_MAC[@]}" | sort -u)
 mapfile -t EXTERNOS < <(printf '%s\n' "${EXTERNOS[@]}" | sort -u)
 
-# --- Procesar y ordenar latencias ---
+# --- Construir tabla de latencias completa ---
 declare -a LATENCIA_TABLA
+declare -A LATENCIA_VALORES
+
+# Cargar valores de latencia
 if [[ -f "$TMP_DIR/latencia_raw.txt" ]]; then
-    # Ordenar por latencia (descendente)
-    while IFS=$'\t' read -r ip latencia mac; do
-        LATENCIA_TABLA+=("$ip|$latencia|$mac")
-    done < <(sort -k2 -n -r -t$'\t' "$TMP_DIR/latencia_raw.txt")
+    while IFS=$'\t' read -r ip latencia; do
+        LATENCIA_VALORES["$ip"]="$latencia"
+    done < "$TMP_DIR/latencia_raw.txt"
+fi
+
+# Para cada IP con latencia, construir entrada completa
+for ip in "${!LATENCIA_VALORES[@]}"; do
+    latencia="${LATENCIA_VALORES[$ip]}"
+    mac="${DEVICE_MAC[$ip]:-desconocida}"
+    tx=${DEVICE_TX[$ip]:-0}
+    rx=${DEVICE_RX[$ip]:-0}
+    total=$(( tx + rx ))
+    LATENCIA_TABLA+=("$ip|$latencia|$mac|$tx|$rx|$total")
+done
+
+# Ordenar por latencia descendente
+if [[ ${#LATENCIA_TABLA[@]} -gt 0 ]]; then
+    # Usar proceso temporal para ordenar
+    {
+        for entry in "${LATENCIA_TABLA[@]}"; do
+            IFS='|' read -r ip latencia mac tx rx total <<< "$entry"
+            echo -e "$latencia\t$entry"
+        done
+    } | sort -k1 -n -r | cut -f2- > "$TMP_DIR/latencia_ordenada.txt"
+
+    # Recargar la tabla ordenada
+    mapfile -t LATENCIA_TABLA < "$TMP_DIR/latencia_ordenada.txt"
 fi
 
 DASH_URL="No activo"
@@ -534,11 +558,11 @@ FECHA_REPORTE=$(date '+%Y-%m-%d %H:%M:%S')
 
     echo "=== LATENCIAS (ordenadas de mayor a menor) ==="
     if [[ ${#LATENCIA_TABLA[@]} -gt 0 ]]; then
-        printf "%-40s %-15s %s\n" "Dispositivo" "Latencia (ms)" "MAC"
-        echo "------------------------------------------------------------------------"
+        printf "%-40s %-15s %-20s %-12s %-12s %-12s\n" "Dispositivo" "Latencia (ms)" "MAC" "TX" "RX" "Total"
+        echo "------------------------------------------------------------------------------------------------------------------------"
         for entry in "${LATENCIA_TABLA[@]}"; do
-            IFS='|' read -r ip latencia mac <<< "$entry"
-            printf "%-40s %-15s %s\n" "$ip" "$latencia" "$mac"
+            IFS='|' read -r ip latencia mac tx rx total <<< "$entry"
+            printf "%-40s %-15s %-20s %-12s %-12s %-12s\n" "$ip" "$latencia" "$mac" "$tx" "$rx" "$total"
         done
     else
         echo "Sin datos de latencia."
@@ -688,20 +712,34 @@ cat >> "$HTML_REPORT" <<EOF
     <div class="section">
         <h2>⏱️ Latencias (ordenadas de mayor a menor)</h2>
         <table>
-            <tr><th>Dispositivo</th><th>Latencia (ms)</th><th>MAC</th></tr>
+            <tr>
+                <th>Dispositivo</th>
+                <th>Latencia (ms)</th>
+                <th>MAC</th>
+                <th>TX</th>
+                <th>RX</th>
+                <th>Total</th>
+            </tr>
 EOF
 
 if [[ ${#LATENCIA_TABLA[@]} -gt 0 ]]; then
     for entry in "${LATENCIA_TABLA[@]}"; do
-        IFS='|' read -r ip latencia mac <<< "$entry"
+        IFS='|' read -r ip latencia mac tx rx total <<< "$entry"
         if (( ${latencia%.*} > 150 )); then
-            echo "            <tr><td>$ip</td><td class=\"high-latency\">$latencia</td><td>$mac</td></tr>" >> "$HTML_REPORT"
+            echo "            <tr>" >> "$HTML_REPORT"
+            echo "                <td>$ip</td>" >> "$HTML_REPORT"
+            echo "                <td class=\"high-latency\">$latencia</td>" >> "$HTML_REPORT"
+            echo "                <td>$mac</td>" >> "$HTML_REPORT"
+            echo "                <td>$tx</td>" >> "$HTML_REPORT"
+            echo "                <td>$rx</td>" >> "$HTML_REPORT"
+            echo "                <td>$total</td>" >> "$HTML_REPORT"
+            echo "            </tr>" >> "$HTML_REPORT"
         else
-            echo "            <tr><td>$ip</td><td>$latencia</td><td>$mac</td></tr>" >> "$HTML_REPORT"
+            echo "            <tr><td>$ip</td><td>$latencia</td><td>$mac</td><td>$tx</td><td>$rx</td><td>$total</td></tr>" >> "$HTML_REPORT"
         fi
     done
 else
-    echo "            <tr><td colspan='3'>Sin datos de latencia.</td></tr>" >> "$HTML_REPORT"
+    echo "            <tr><td colspan='6'>Sin datos de latencia.</td></tr>" >> "$HTML_REPORT"
 fi
 
 cat >> "$HTML_REPORT" <<EOF
